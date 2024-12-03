@@ -91,7 +91,7 @@ class QuantumConv2d(nn.Module):
             torch.Tensor: Static RZ rotation matrix.
         """
         binary_array = [self.bin_list(x, qubits) for x in range(2**qubits)]
-        binary_array = torch.flip(torch.tensor(binary_array), dims=(-1,))
+        binary_array = torch.flip(torch.tensor(binary_array), dims=(-1,-2))
         sign_matrix = -torch.ones((2**qubits, qubits)) + 2 * binary_array
         return sign_matrix
     
@@ -120,7 +120,6 @@ class QuantumConv2d(nn.Module):
         Returns:
             torch.Tensor: RZZ gate matrix.
         """
-        qubits = self.qubit_tuples
         control = torch.min(qubits)
         target = torch.max(qubits)
         diff = target - control
@@ -196,8 +195,8 @@ class QuantumConv2d(nn.Module):
         unitary = torch.tensor([[torch.cos(rotations[0]/2), -1j * torch.sin(rotations[0]/2)], 
                         [-1j*torch.sin(rotations[0]/2), torch.cos(rotations[0]/2)]], dtype=torch.cfloat)
         for i in range(1, qubits):
-            unitary = torch.kron(torch.tensor([[torch.cos(rotations[i]/2), -1j * torch.sin(rotations[i]/2)], 
-                        [-1j * torch.sin(rotations[i]/2), torch.cos(rotations[i]/2)]], dtype=torch.cfloat), unitary)
+            unitary = torch.kron(unitary, torch.tensor([[torch.cos(rotations[i]/2), -1j * torch.sin(rotations[i]/2)], 
+                        [-1j * torch.sin(rotations[i]/2), torch.cos(rotations[i]/2)]], dtype=torch.cfloat))
         return unitary
 
     def get_CNOT(self, control, target, qubits):
@@ -297,7 +296,7 @@ class QuantumConv2d(nn.Module):
         # Define the sequence of operations in the quantum circuit
         operations = []
         operations.append(self.h_static)
-        operations.append(self.get_all_RZ(x.flatten(), self.rz_static))
+        operations.append(self.get_all_RZ(x.flatten().flip(dims=(0,)), self.rz_static))
         operations.append(self.get_RZZ_interconnection(x.flatten()))
         operations.append(self.get_RX(self.weight.flatten(), self.qubits))
         operations.append(self.cnot_static)

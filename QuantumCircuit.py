@@ -44,6 +44,8 @@ def build_and_execute_circuit(in_rot, weight_rot):
         angle = in_rot[i]
         qc.rz(angle,i)
 
+    n_qubits = 2
+
     for i in range(n_qubits-1):
         for j in range(i+1, n_qubits):
             angle = Parameter('enc_1_'+str(i)+'_'+str(j))
@@ -60,6 +62,10 @@ def build_and_execute_circuit(in_rot, weight_rot):
 
     op = Operator(qc)
 
+    # plot the circuit
+    qc.draw('mpl')
+
+
     test = op.data
     state_probs = np.abs(test)[:,0]**2 / np.sum(np.abs(test)[:,0]**2)
     qubit_probs = state_probs @ states
@@ -69,9 +75,10 @@ def build_and_execute_circuit(in_rot, weight_rot):
 
 if __name__ == '__main__':
     qcon = QuantumConv2d(2, 2, 8)
+    x = torch.tensor([[0.1, 0.2], [0.3, 0.4]])
     qcon.weight = nn.Parameter(torch.tensor([[0.5, 0.6], [0.7, 0.8]]))
-    qcon.sub_forward(torch.tensor([[0.1, 0.2], [0.3, 0.4]]))
+    qcon.sub_forward(x)
     
     in_rot = [0.1, 0.2, 0.3, 0.4]
-    weight_rot = [0.5, 0.6, 0.7, 0.8]
+    weight_rot = [0.8, 0.6, 0.7, 0.5]
     build_and_execute_circuit(in_rot, weight_rot)
