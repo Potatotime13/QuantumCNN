@@ -1,3 +1,4 @@
+#%%
 import numpy as np
 import torch
 import torch.nn as nn
@@ -44,8 +45,6 @@ def build_and_execute_circuit(in_rot, weight_rot):
         angle = in_rot[i]
         qc.rz(angle,i)
 
-    n_qubits = 2
-
     for i in range(n_qubits-1):
         for j in range(i+1, n_qubits):
             angle = Parameter('enc_1_'+str(i)+'_'+str(j))
@@ -72,13 +71,13 @@ def build_and_execute_circuit(in_rot, weight_rot):
     
     return qubit_probs
 
-
+#%%
 if __name__ == '__main__':
     qcon = QuantumConv2d(2, 2, 8)
-    x = torch.tensor([[0.1, 0.2], [0.3, 0.4]])
-    qcon.weight = nn.Parameter(torch.tensor([[0.5, 0.6], [0.7, 0.8]]))
+    x = torch.tensor([[0.1, 0.2], [0.3, 0.4]], device='cuda')
+    qcon.weight = nn.Parameter(torch.tensor([[0.5, 0.6], [0.7, 0.8]], device='cuda'))
     qcon.sub_forward(x)
     
     in_rot = [0.1, 0.2, 0.3, 0.4]
-    weight_rot = [0.8, 0.6, 0.7, 0.5]
+    weight_rot = [0.5, 0.6, 0.7, 0.8]
     build_and_execute_circuit(in_rot, weight_rot)
