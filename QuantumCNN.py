@@ -355,6 +355,7 @@ class QuantumConv2d(nn.Module):
         # NOTE Quantum Circuit
         out = torch.vmap(self.sub_forward)(out).reshape(
             batch_dim,out.shape[0]//batch_dim*self.kernel_size,self.kernel_size)
+        # TODO no permute_back the output are the channels (not really a difference but for the sake of consistency)
         out = out[:,self.permute_back,:].reshape(batch_dim,self.size,self.size)
         return out
 
