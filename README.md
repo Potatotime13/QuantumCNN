@@ -43,6 +43,12 @@ The script will download the MNIST dataset, train the QuantumCNN model, and eval
 ## Model Architecture
 The QuantumCNN model consists of the following components:
 
+In the original paper the have the following architecture:
+
+28x28x1 --(QCONV)-> 7x7x4 --(FC)-> 11
+            |                | 
+Params:     4               8635
+
 - Classical Convolutional Layers: Two classical convolutional layers are used to extract features from the input images.
 - Quantum Convolutional Layer: A custom quantum convolutional layer (QuantumConv2d) is implemented to process the features using quantum operations.
 - Fully Connected Layer: A fully connected layer is used to map the extracted features to the output classes.
