@@ -1,3 +1,4 @@
+#%%
 import numpy as np
 import torch
 import torch.nn as nn
@@ -196,7 +197,7 @@ class QuantumConv2d(nn.Module):
         """
         rot_mul = rotations[:,None].matmul(rotations[None,:])
         rot_mul = rot_mul.flatten()[self.upper_triag]
-        idx = torch.arange(len(self.qubit_tuples))[:,None]
+        idx = torch.arange(len(self.qubit_tuples), device=self.device)[:,None]
         ops:torch.Tensor = torch.vmap(self.get_RZZ)(idx, rot_mul[:,None])
         ops = ops.reshape(len(self.upper_triag), ops.shape[1], ops.shape[2])
         # 6, 16, 16
@@ -372,8 +373,8 @@ class QuantumConvNet(nn.Module):
         self.conv1 = nn.Conv2d(1, 4, 2, 2, 2)
         self.conv2 = nn.Conv2d(1, 4, 2, 2)
         self.qconv2 = QuantumConv2d(2, 2, 28)
-        self.fc1 = nn.Linear(14*14*4, 10)
-        self.fc_bonus = nn.Linear(14*14*4, 28*28)
+        self.fc1 = nn.Linear(28**2, 10)
+        self.fc_bonus = nn.Linear(28**2, 5)
     
     def forward(self, x):  
         """
@@ -388,15 +389,17 @@ class QuantumConvNet(nn.Module):
         #x = torch.relu(self.conv1(x))
         #x = torch.relu(self.conv2(x))
         #x = x.squeeze(1)
-        #x = self.qconv2(x)
+        x = self.qconv2(x)
         # 4 * 4 * 4 = 64
         x = x.flatten(1)
-        x = torch.tanh(self.fc_bonus(x))
+        #x = torch.sigmoid(self.fc_bonus(x))
         x = torch.softmax(self.fc1(x), dim=-1)
         return x
+    
+#%%
 
 if __name__ == '__main__':
-    # Data transformation and loading
+    #%% Data transformation and loading
     transform = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize((0.5,), (0.5,)),
                                 ])
@@ -417,6 +420,10 @@ if __name__ == '__main__':
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(qnet.parameters(), lr=0.01)
 
+    # print all parameters
+    for name, param in qnet.named_parameters():
+        print(name, param.shape)
+
     # Training loop
     for epoch in tqdm(range(10)):
         running_loss = []
@@ -432,7 +439,7 @@ if __name__ == '__main__':
             running_loss.append(loss.item())
 
         print(f'Epoch: {epoch}, Loss: {np.mean(running_loss)}')
-        print(qnet.qconv2.weight)
+        #print(qnet.qconv2.weight)
         running_loss = []
 
         # Validation
