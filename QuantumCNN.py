@@ -55,7 +55,7 @@ class QuantumConv2d(nn.Module):
         self.states = self.get_static_state_list(self.qubits).to(self.device)
 
         # Learnable weight parameter
-        self.weight = nn.Parameter(torch.randn(kernel_size, kernel_size, requires_grad=True)).to(self.device)
+        self.weight = nn.Parameter(torch.randn(kernel_size, kernel_size))
 
     def get_all_H(self, num_qubits):
         """
@@ -369,10 +369,11 @@ class QuantumConvNet(nn.Module):
         Initialize the QuantumConvNet.
         """
         super(QuantumConvNet, self).__init__()
-        self.conv1 = nn.Conv2d(1, 10, 2, 2, 2)
-        self.conv2 = nn.Conv2d(10, 100, 2, 2)
-        self.qconv2 = QuantumConv2d(2, 2, 8)
-        self.fc1 = nn.Linear(6400, 10)
+        self.conv1 = nn.Conv2d(1, 4, 2, 2, 2)
+        self.conv2 = nn.Conv2d(1, 4, 2, 2)
+        self.qconv2 = QuantumConv2d(2, 2, 28)
+        self.fc1 = nn.Linear(14*14*4, 10)
+        self.fc_bonus = nn.Linear(14*14*4, 28*28)
     
     def forward(self, x):  
         """
@@ -384,12 +385,13 @@ class QuantumConvNet(nn.Module):
         Returns:
             torch.Tensor: Output tensor.
         """
-        x = torch.relu(self.conv1(x))
-        x = torch.relu(self.conv2(x))
-        x = x.squeeze(1)
-        #x = torch.relu(self.qconv2(x))
+        #x = torch.relu(self.conv1(x))
+        #x = torch.relu(self.conv2(x))
+        #x = x.squeeze(1)
+        #x = self.qconv2(x)
         # 4 * 4 * 4 = 64
         x = x.flatten(1)
+        x = torch.tanh(self.fc_bonus(x))
         x = torch.softmax(self.fc1(x), dim=-1)
         return x
 
@@ -401,10 +403,10 @@ if __name__ == '__main__':
 
     trainset = datasets.MNIST('./', download=True, train=True, transform=transform)
     # cut dataset to 1000 samples
-    trainset.data = trainset.data[:10000]
+    trainset.data = trainset.data
     valset = datasets.MNIST('./', download=True, train=False, transform=transform)
     # cut dataset to 100 samples
-    valset.data = valset.data[:1000]
+    valset.data = valset.data
 
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=10, shuffle=True)
     valloader = torch.utils.data.DataLoader(valset, batch_size=10, shuffle=True)
@@ -430,6 +432,7 @@ if __name__ == '__main__':
             running_loss.append(loss.item())
 
         print(f'Epoch: {epoch}, Loss: {np.mean(running_loss)}')
+        print(qnet.qconv2.weight)
         running_loss = []
 
         # Validation
