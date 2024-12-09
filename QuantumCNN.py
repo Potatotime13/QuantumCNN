@@ -416,7 +416,8 @@ if __name__ == '__main__':
 
     # Initialize the quantum convolutional neural network
     qnet = QuantumConvNet()
-    qnet = qnet.to('cuda')
+    dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    qnet = qnet.to(device=dev)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(qnet.parameters(), lr=0.01)
 
@@ -431,8 +432,8 @@ if __name__ == '__main__':
             
             optimizer.zero_grad()
 
-            outputs = qnet(X_batch.to('cuda'))
-            loss = criterion(outputs, y_batch.to('cuda'))
+            outputs = qnet(X_batch.to(dev))
+            loss = criterion(outputs, y_batch.to(dev))
             loss.backward()
             optimizer.step()
 
