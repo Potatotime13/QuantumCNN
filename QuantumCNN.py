@@ -359,7 +359,35 @@ class QuantumConv2d(nn.Module):
         # TODO no permute_back the output are the channels (not really a difference but for the sake of consistency)
         out = out[:,self.permute_back,:].reshape(batch_dim,self.size,self.size)
         return out
+    
 
+class ClassicalConvNet(nn.Module):
+    """
+    A quantum convolutional neural network.
+    """
+    def __init__(self):
+        """
+        Initialize the QuantumConvNet.
+        """
+        super(ClassicalConvNet, self).__init__()
+        self.conv1 = nn.Conv2d(1, 4, 2, 2)
+        self.fc1 = nn.Linear(28**2, 10)
+
+    def forward(self, x):  
+        """
+        Perform the forward pass of the QuantumConvNet.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor.
+        """
+        x = torch.relu(self.conv1(x))
+        # 4 * 4 * 4 = 64
+        x = x.flatten(1)
+        x = torch.softmax(self.fc1(x), dim=-1)
+        return x
 
 class QuantumConvNet(nn.Module):
     """
@@ -415,15 +443,11 @@ if __name__ == '__main__':
     valloader = torch.utils.data.DataLoader(valset, batch_size=10, shuffle=True)
 
     # Initialize the quantum convolutional neural network
-    qnet = QuantumConvNet()
+    qnet = ClassicalConvNet()
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     qnet = qnet.to(device=dev)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(qnet.parameters(), lr=0.01)
-
-    # print all parameters
-    for name, param in qnet.named_parameters():
-        print(name, param.shape)
 
     # Training loop
     for epoch in tqdm(range(10)):
