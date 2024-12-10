@@ -56,7 +56,7 @@ class QuantumConv2d(nn.Module):
         self.states = self.get_static_state_list(self.qubits).to(self.device)
 
         # Learnable weight parameter
-        self.weight = nn.Parameter(torch.randn(kernel_size, kernel_size))
+        self.weight = nn.Parameter(torch.randn(kernel_size*kernel_size))
 
     def get_all_H(self, num_qubits):
         """
@@ -168,7 +168,7 @@ class QuantumConv2d(nn.Module):
 
         return unitary
 
-    def get_all_RZ(self, rotations:torch.Tensor, sign_matrix):
+    def get_all_RZ(self, rotations:torch.Tensor):
         """
         Get the RZ gate for all qubits.
 
@@ -180,7 +180,7 @@ class QuantumConv2d(nn.Module):
             torch.Tensor: RZ gate matrix.
         """
         rots = rotations.div(torch.tensor([2 * 1j], dtype=torch.cfloat, device=self.device))
-        unitary = torch.sum(sign_matrix * rots, dim=(-1,))
+        unitary = torch.sum(self.rz_static * rots, dim=(-1,))
         unitary = torch.exp(unitary)
         unitary = torch.diag(unitary)
         return unitary
@@ -206,7 +206,7 @@ class QuantumConv2d(nn.Module):
             unitary = unitary.matmul(ops[ops.shape[0]-2-i,:,:])
         return unitary
 
-    def get_RX(self, rotations, qubits):
+    def get_RX(self):
         """
         Get the RX gate for given qubits and rotations.
 
@@ -217,13 +217,21 @@ class QuantumConv2d(nn.Module):
         Returns:
             torch.Tensor: RX gate matrix.
         """
-        idx = -1
-        unitary = torch.tensor([[torch.cos(rotations[idx]/2), -1j * torch.sin(rotations[idx]/2)], 
-                        [-1j*torch.sin(rotations[idx]/2), torch.cos(rotations[idx]/2)]], dtype=torch.cfloat, device=self.device)
-        for i in range(1, qubits):
-            idx = qubits - i - 1
-            unitary = torch.kron(unitary, torch.tensor([[torch.cos(rotations[idx]/2), -1j * torch.sin(rotations[idx]/2)], 
-                        [-1j * torch.sin(rotations[idx]/2), torch.cos(rotations[idx]/2)]], dtype=torch.cfloat, device=self.device))
+        shape = (self.qubits//2, self.qubits//2)
+        scale = torch.kron(self.weight/2, torch.ones(shape, dtype=torch.cfloat, device=self.device))
+        shift = torch.kron(torch.ones(self.qubits, dtype=torch.cfloat, device=self.device),
+                            torch.pi/2 * torch.eye(shape[0], dtype=torch.cfloat, device=self.device))
+        w_scale = scale + shift
+        w_scale = torch.sin(w_scale)
+        signer = torch.kron(torch.ones(self.qubits, dtype=torch.cfloat, device=self.device),
+                            torch.tensor([[1, -1j], [-1j, 1]], dtype=torch.cfloat, device=self.device))
+        w_scale = signer * w_scale
+        
+        unitary = w_scale[:,-2:]
+        for i in range(1, self.qubits):
+            idx = -2 * i
+            unitary = torch.kron(unitary, w_scale[:,idx-2:idx])
+
         return unitary
 
     def get_CNOT(self, control, target, qubits):
@@ -309,6 +317,21 @@ class QuantumConv2d(nn.Module):
             res.append([int(y) for y in x])
         return torch.tensor(res, dtype=torch.float32)
     
+    def get_input_operation(self, x: torch.Tensor):
+        """
+        Get the input operation for the quantum circuit.
+
+        Args:
+            x (torch.Tensor): Flat input tensor.
+
+        Returns:
+            torch.Tensor: Input operation.
+        """
+        rz = self.get_all_RZ(x)
+        rzz = self.get_RZZ_interconnection(x)
+
+        return rzz.matmul(rz)
+    
     def sub_forward(self, x: torch.Tensor):
         """
         NOTE This function simulates the quantum circuit for a sub-part of the input.
@@ -321,17 +344,13 @@ class QuantumConv2d(nn.Module):
             torch.Tensor: Output tensor. shape:(batch*(pixelanzahl/kernel_size), kernel_size, kernel_size)
         """
         # Define the sequence of operations in the quantum circuit
-        operations = []
-        operations.append(self.h_static)
-        operations.append(self.get_all_RZ(x.flatten(), self.rz_static))
-        operations.append(self.get_RZZ_interconnection(x.flatten()))
-        operations.append(self.get_RX(self.weight.flatten(), self.qubits))
-        operations.append(self.cnot_static)
+        h = self.h_static
+        rz_rzz = self.get_input_operation(x.flatten())
+        rx = self.get_RX()
+        cnot = self.cnot_static
 
         # Combine all operations into a single unitary matrix
-        final:torch.Tensor = operations[-1]
-        for i in range(0, len(operations)-1):
-            final = final.matmul(operations[len(operations)-2-i])
+        final = cnot.matmul(rx).matmul(rz_rzz).matmul(h)
 
         # Calculate the state probabilities
         state_probs = (torch.abs(final[:, 0])**2)[None,:]
@@ -350,15 +369,15 @@ class QuantumConv2d(nn.Module):
             torch.Tensor: Output tensor.
         """
         batch_dim = x.shape[0]
-        out = x.reshape(batch_dim,(self.size**2)//2,1,2)
-        out = out[:,self.sub_part_permutation].reshape(batch_dim,(self.size**2)//self.kernel_size**2,2,2)
-        out = out.flatten(end_dim=-3)
+        x = x.reshape(batch_dim,(self.size**2)//2,1,2)
+        x = x[:,self.sub_part_permutation].reshape(batch_dim,(self.size**2)//self.kernel_size**2,2,2)
+        x = x.flatten(end_dim=-3)
         # NOTE Quantum Circuit
-        out = torch.vmap(self.sub_forward)(out).reshape(
-            batch_dim,out.shape[0]//batch_dim*self.kernel_size,self.kernel_size)
+        x = torch.vmap(self.sub_forward)(x).reshape(
+            batch_dim,x.shape[0]//batch_dim*self.kernel_size,self.kernel_size)
         # TODO no permute_back the output are the channels (not really a difference but for the sake of consistency)
-        out = out[:,self.permute_back,:].reshape(batch_dim,self.size,self.size)
-        return out
+        x = x[:,self.permute_back,:].reshape(batch_dim,self.size,self.size)
+        return x
     
 
 class ClassicalConvNet(nn.Module):
@@ -398,11 +417,8 @@ class QuantumConvNet(nn.Module):
         Initialize the QuantumConvNet.
         """
         super(QuantumConvNet, self).__init__()
-        self.conv1 = nn.Conv2d(1, 4, 2, 2, 2)
-        self.conv2 = nn.Conv2d(1, 4, 2, 2)
         self.qconv2 = QuantumConv2d(2, 2, 28)
         self.fc1 = nn.Linear(28**2, 10)
-        self.fc_bonus = nn.Linear(28**2, 5)
     
     def forward(self, x):  
         """
@@ -414,13 +430,9 @@ class QuantumConvNet(nn.Module):
         Returns:
             torch.Tensor: Output tensor.
         """
-        #x = torch.relu(self.conv1(x))
-        #x = torch.relu(self.conv2(x))
-        #x = x.squeeze(1)
-        x = self.qconv2(x)
+        x = torch.relu(self.qconv2(x))
         # 4 * 4 * 4 = 64
         x = x.flatten(1)
-        #x = torch.sigmoid(self.fc_bonus(x))
         x = torch.softmax(self.fc1(x), dim=-1)
         return x
     
@@ -434,21 +446,23 @@ if __name__ == '__main__':
 
     trainset = datasets.MNIST('./', download=True, train=True, transform=transform)
     # cut dataset to 1000 samples
-    trainset.data = trainset.data
+    trainset.data = trainset.data[:10000]
     valset = datasets.MNIST('./', download=True, train=False, transform=transform)
     # cut dataset to 100 samples
-    valset.data = valset.data
+    valset.data = valset.data[:1000]
 
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=10, shuffle=True)
     valloader = torch.utils.data.DataLoader(valset, batch_size=10, shuffle=True)
 
     # Initialize the quantum convolutional neural network
-    qnet = QuantumConvNet()
+    qnet = ClassicalConvNet()
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     qnet = qnet.to(device=dev)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(qnet.parameters(), lr=0.01)
-
+    #optimizer = optim.SGD(qnet.parameters(), lr=0.001, momentum=0.9)
+    optimizer = optim.Adam(qnet.parameters(), lr=0.001)
+    print(qnet.conv1.weight)
+    test = qnet.fc1.weight
     # Training loop
     for epoch in tqdm(range(10)):
         running_loss = []
@@ -458,13 +472,15 @@ if __name__ == '__main__':
 
             outputs = qnet(X_batch.to(dev))
             loss = criterion(outputs, y_batch.to(dev))
+            loss.retain_grad()
             loss.backward()
             optimizer.step()
 
             running_loss.append(loss.item())
 
         print(f'Epoch: {epoch}, Loss: {np.mean(running_loss)}')
-        #print(qnet.qconv2.weight)
+        print(qnet.conv1.weight)
+        print(qnet.conv1.weight.grad)
         running_loss = []
 
         # Validation
@@ -480,3 +496,5 @@ if __name__ == '__main__':
         print(f'Accuracy: {100 * correct / total}')
 
     print('Finished Training')
+
+    #%% computational graph of quantum convolutional layer
