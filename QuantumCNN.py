@@ -443,7 +443,7 @@ if __name__ == '__main__':
     valloader = torch.utils.data.DataLoader(valset, batch_size=10, shuffle=True)
 
     # Initialize the quantum convolutional neural network
-    qnet = ClassicalConvNet()
+    qnet = QuantumConvNet()
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     qnet = qnet.to(device=dev)
     criterion = nn.CrossEntropyLoss()
@@ -472,10 +472,10 @@ if __name__ == '__main__':
         total = 0
         with torch.no_grad():
             for X_batch, y_batch in valloader:
-                outputs = qnet(X_batch.to('cuda'))
+                outputs = qnet(X_batch.to(dev))
                 _, predicted = torch.max(outputs.data, 1)
                 total += y_batch.size(0)
-                correct += (predicted == y_batch.to('cuda')).sum().item()
+                correct += (predicted == y_batch.to(dev)).sum().item()
 
         print(f'Accuracy: {100 * correct / total}')
 
