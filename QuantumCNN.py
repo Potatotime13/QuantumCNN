@@ -13,11 +13,348 @@ gates = {
     'I': torch.eye(2, dtype=torch.cfloat),
 }
 
+class Hadamard(nn.Module):
+    """
+    A Hadamard gate.
+    this module is a fixed transformation of the input values.
+    """
+    def __init__(self, qubits):
+        """
+        Initialize the Hadamard gate.
+        """
+        super(Hadamard, self).__init__()
+        self.qubits = qubits
+        self.register_buffer('hadamard', gates['H'], persistent=True)
+        self.register_buffer('unitary', self.get_Hadamard(qubits), persistent=True)
+
+    def get_Hadamard(self, qubits):
+        """
+        Get the Hadamard gate for given qubits.
+
+        Args:
+            qubits (int): Number of qubits.
+
+        Returns:
+            torch.Tensor: Hadamard gate matrix.
+        """
+        unitary = self.hadamard
+        for _ in range(1, qubits):
+            unitary = torch.kron(unitary, self.hadamard)
+        return unitary
+
+    def forward(self, x:torch.Tensor):
+        """
+        Perform the forward pass of the Hadamard gate.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor.
+        """
+        return x.matmul(self.unitary)
+
+
+class CNOTRing(nn.Module):
+    """
+    A CNOT ring gate.
+    """
+    def __init__(self, qubits):
+        """
+        Initialize the CNOT ring gate.
+        this module is a fixed transformation of the input values.
+
+        Args:
+            num_qubits (int): Number of qubits.
+        """
+        super(CNOTRing, self).__init__()
+        self.qubits = qubits
+        self.register_buffer('unitary', self.get_CNOT_ring(), persistent=True)
+
+    def get_CNOT(self, control, target, qubits):
+        """
+        Get the CNOT gate for given control and target qubits.
+
+        Args:
+            control (int): Control qubit index.
+            target (int): Target qubit index.
+            qubits (int): Number of qubits.
+
+        Returns:
+            torch.Tensor: CNOT gate matrix.
+        """
+        swap = True
+        if control > target:
+            swap = False
+            control, target = target, control
+        diff = target - control
+        if diff > 1:
+            scaler = torch.eye(2**(diff-1))
+            upper = torch.kron(scaler, gates['I'])
+            lower = torch.kron(scaler, gates['X'])
+        else:
+            upper = gates['I']
+            lower = gates['X']
+        
+        unitary = torch.kron(torch.tensor([[1, 0], [0, 0]]), upper) + torch.kron(torch.tensor([[0, 0], [0, 1]]), lower)
+
+        if swap:
+            swap_matrix = gates['H']
+            for _ in range(1,diff+1):
+                swap_matrix = torch.kron(swap_matrix, gates['H'])
+            unitary = swap_matrix @ unitary @ swap_matrix
+
+        if qubits > diff + 1:
+            bits_before = int(control - 1)
+            bits_after = int(qubits - target)
+            unitary = torch.kron(torch.eye(2**bits_after), torch.kron(unitary, torch.eye(2**bits_before)))
+
+        return unitary
+
+    def get_CNOT_ring(self):
+        """
+        Get the CNOT ring for all qubits.
+
+        Args:
+            num_qubits (int): Number of qubits.
+
+        Returns:
+            torch.Tensor: CNOT ring matrix.
+        """
+        unitary = self.get_CNOT(1, 2, self.qubits)
+        for i in range(2, self.qubits):
+            unitary = self.get_CNOT(i, i+1, self.qubits) @ unitary
+        unitary = self.get_CNOT(self.qubits, 1, self.qubits) @ unitary
+        return unitary
+    
+    def forward(self, x:torch.Tensor) -> torch.Tensor:
+        """
+        Perform the forward pass of the CNOT ring gate.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor.
+        """
+        return self.unitary.matmul(x)
+
+
+class HCNOT(nn.Module):
+    """
+    An HCNOT gate.
+    """
+    def __init__(self, qubits):
+        """
+        Initialize the HCNOT gate.
+        """
+        super(HCNOT, self).__init__()
+        self.qubits = qubits
+        self.h = Hadamard(qubits)
+        self.cnot = CNOTRing(qubits)
+
+    def forward(self, x):
+        """
+        Perform the forward pass of the HCNOT gate.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor.
+        """
+        return self.h(self.cnot(x))
+
+
+class RX(nn.Module):
+    """
+    An RX gate.
+    """
+    def __init__(self, qubits):
+        """
+        Initialize the RX gate.
+
+        Args:
+            rotation (torch.Tensor): Rotation angle.
+        """
+        super(RX, self).__init__()
+        self.qubits = qubits
+        self.shape = (self.qubits//2, self.qubits//2)
+        shift = torch.kron(torch.pi/2 * torch.eye(self.shape[0], dtype=torch.cfloat), torch.ones(self.qubits, dtype=torch.cfloat))
+        signer = torch.kron(torch.tensor([[1, -1j], [-1j, 1]], dtype=torch.cfloat), torch.ones(self.qubits, dtype=torch.cfloat))
+        self.register_buffer('signer', signer)
+        self.register_buffer('shift', shift)
+        self.register_buffer('pattern', torch.ones(self.shape, dtype=torch.cfloat))
+
+        self.weight = nn.Parameter(torch.randn(qubits)) # trainable parameter
+
+    def forward(self, x):
+        """
+        Perform the forward pass of the RX gate.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor.
+        """
+
+        scale = torch.kron(self.weight/2, self.pattern)
+        w_scale = scale + self.shift
+        w_scale = torch.sin(w_scale)
+        w_scale = self.signer * w_scale
+        
+        unitary = w_scale[:,-2:]
+        for i in range(1, self.qubits):
+            idx = -2 * i
+            unitary = torch.kron(unitary, w_scale[:,idx-2:idx])
+
+        return unitary @ x
+
+
+class RZRZZ(nn.Module):
+    """
+    An RZRZZ gate.
+    """
+    def __init__(self, qubits):
+        """
+        Initialize the RZRZZ gate.
+        This module acts as a higher order encoding of the input values.
+
+        Args:
+            qubits (int): Number of qubits.
+        """
+        super(RZRZZ, self).__init__()
+        self.qubits = qubits
+        qubit_tuples = torch.tensor([[i, j] for i in range(1, self.qubits+1) for j in range(i+1, self.qubits+1)]).int()
+        self.register_buffer('qubit_tuples', qubit_tuples)
+        rzz_diags = []
+        for i in range(len(qubit_tuples)):
+            rzz_diags.append(self.get_RZZ_static(qubit_tuples[i]))
+        rzz_diags = torch.stack(rzz_diags)
+        self.register_buffer('rzz_diags', rzz_diags)
+        self.register_buffer('rzzscaler', torch.eye(2**self.qubits, dtype=torch.cfloat))
+        self.register_buffer('rzfactor', torch.tensor([2 * 1j], dtype=torch.cfloat))
+        upper_triag = torch.triu(torch.arange(self.qubits**2).reshape(self.qubits, self.qubits), diagonal=1)
+        upper_triag = upper_triag[upper_triag != 0]
+        self.register_buffer('upper_triag', upper_triag)
+        self.register_buffer('idx', torch.arange(len(qubit_tuples))[:,None])
+        self.register_buffer('rz_static', self.get_static_RZ())
+
+    def get_static_RZ(self):
+        """
+        Get the static RZ rotation matrix for all qubits.
+
+        Args:
+            qubits (int): Number of qubits.
+
+        Returns:
+            torch.Tensor: Static RZ rotation matrix.
+        """
+        binary_array = [self.bin_list(x, self.qubits) for x in range(2**self.qubits)]
+        binary_array = torch.flip(torch.tensor(binary_array), dims=(-1,-2))
+        sign_matrix = -torch.ones((2**self.qubits, self.qubits)) + 2 * binary_array
+        return sign_matrix
+
+    def get_RZZ_static(self, qubits):
+        """
+        Get the RZZ gate for given qubits and rotation.
+
+        Args:
+            qubits (int): Number of qubits.
+            rotation (torch.Tensor): Rotation angle.
+
+        Returns:
+            torch.Tensor: RZZ gate matrix.
+        """
+        control = torch.min(qubits)
+        target = torch.max(qubits)
+        diff = target - control
+        upper_diff = 4 - target
+        b1 = torch.tensor([1j*1])
+        b2 = torch.tensor([-1j*1])
+        operator_core = torch.concat([b2, b1, b1, b2])
+        
+        operator = torch.kron(operator_core, torch.ones(2**(control-1)))
+
+        if diff > 1:
+            operator_upper = operator[:len(operator)//2]
+            operator_lower = operator[len(operator)//2:]
+            scaler = torch.ones(2**(diff-1))
+            upper = torch.kron(scaler, operator_upper)
+            lower = torch.kron(scaler, operator_lower)
+            operator = torch.kron(torch.tensor([1, 0]), upper) + torch.kron(torch.tensor([0, 1]), lower)
+        
+        if upper_diff > 0:
+            operator = torch.kron(torch.ones(2**upper_diff), operator)
+
+        return operator
+
+    def bin_list(self, num, length):
+        """
+        Convert a number to a binary list of a given length.
+
+        Args:
+            num (int): The number to convert.
+            length (int): The length of the binary list.
+
+        Returns:
+            list: Binary representation of the number.
+        """
+        formating = '{0:0' + str(length) + 'b}'
+        binary = f'{formating}'.format(num)
+        return [int(x) for x in binary]
+    
+    def get_RZZ(self, idx, rotation):
+        """
+        Get the RZZ gate for given qubits and rotation.
+
+        Args:
+            qubits (int): Number of qubits.
+            rotation (torch.Tensor): Rotation angle.
+
+        Returns:
+            torch.Tensor: RZZ gate matrix.
+        """
+        tmp_diag = self.rzz_diags[idx]
+        tmp_diag = torch.exp(tmp_diag*rotation/2)
+        unitary = tmp_diag * self.rzzscaler
+
+        return unitary
+
+    def forward(self, x:torch.Tensor):
+        """
+        Perform the forward pass of the RZRZZ gate.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor.
+        """
+
+        rot_mul = x[:,None].matmul(x[None,:])
+        rot_mul = rot_mul.flatten()[self.upper_triag]
+        ops:torch.Tensor = torch.vmap(self.get_RZZ)(self.idx, rot_mul[:,None])
+        ops = ops.reshape(len(self.upper_triag), ops.shape[1], ops.shape[2])
+        # 6, 16, 16
+        unitary_rzz = ops[-1,:,:]
+        for i in range(0, ops.shape[0]-1):
+            unitary_rzz = unitary_rzz.matmul(ops[ops.shape[0]-2-i,:,:])
+
+        rot = x.div(self.rzfactor)
+        unitary_rz = torch.sum(self.rz_static * rot, dim=(-1,))
+        unitary_rz = torch.exp(unitary_rz)
+        unitary_rz = torch.diag(unitary_rz)
+        
+        return unitary_rzz.matmul(unitary_rz)
+
+
 class QuantumConv2d(nn.Module):
     """
     A quantum convolutional layer for 2D inputs.
     """
-    def __init__(self, kernel_size, stride, size):
+    def __init__(self, kernel_size, stride, size, device=None):
         """
         Initialize the QuantumConv2d layer.
 
@@ -33,26 +370,22 @@ class QuantumConv2d(nn.Module):
         self.size = size
 
         # get device for new tensors
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if device is not None:
+            self.device = device
+        else:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        self.hcnot = HCNOT(self.qubits)
+        self.rx = RX(self.qubits)
+        self.rzrzz = RZRZZ(self.qubits)
 
         # Permutation for sub-parts of the input
         self.sub_part_permutation = ((torch.arange(0,(size**2)/kernel_size) % size)* (size/kernel_size) 
                                      + torch.arange(0,(size**2)/kernel_size) // size).int().to(self.device)
-        self.upper_triag = torch.triu(torch.arange(self.qubits**2).reshape(self.qubits, self.qubits), diagonal=1)
-        self.upper_triag = self.upper_triag[self.upper_triag != 0].to(self.device)
-        self.qubit_tuples = torch.tensor([[i, j] for i in range(1, self.qubits+1) for j in range(i+1, self.qubits+1)]).int().to(self.device)
         divisor = self.size // self.kernel_size
         self.permute_back = (torch.arange(0, self.size**2//self.kernel_size) % divisor * self.size
                              + torch.arange(0, self.size**2//self.kernel_size) // divisor).int().to(self.device)
-        rzz_diags = []
-        for i in range(len(self.qubit_tuples)):
-            rzz_diags.append(self.get_RZZ_static(self.qubit_tuples[i]))
-        self.rzz_diags = torch.stack(rzz_diags).to(self.device)
 
-        # Static layers
-        self.h_static = self.get_all_H(self.qubits).to(self.device)
-        self.rz_static = self.get_static_RZ(self.qubits).to(self.device)
-        self.cnot_static = self.get_CNOT_ring(self.qubits).to(self.device)
         self.states = self.get_static_state_list(self.qubits).to(self.device)
 
         # Learnable weight parameter
@@ -344,16 +677,13 @@ class QuantumConv2d(nn.Module):
             torch.Tensor: Output tensor. shape:(batch*(pixelanzahl/kernel_size), kernel_size, kernel_size)
         """
         # Define the sequence of operations in the quantum circuit
-        h = self.h_static
-        rz_rzz = self.get_input_operation(x.flatten())
-        rx = self.get_RX()
-        cnot = self.cnot_static
 
-        # Combine all operations into a single unitary matrix
-        final = cnot.matmul(rx).matmul(rz_rzz).matmul(h)
+        x = self.rzrzz(x) # encode the input
+        x = self.rx(x) # apply weights
+        x = self.hcnot(x) # transform the input
 
-        # Calculate the state probabilities
-        state_probs = (torch.abs(final[:, 0])**2)[None,:]
+        # Calculate the state probabilities e.g. measure the output
+        state_probs = (torch.abs(x[:, 0])**2)[None,:]
         state_probs = state_probs.matmul(self.states)
 
         return state_probs
@@ -378,7 +708,7 @@ class QuantumConv2d(nn.Module):
         # TODO no permute_back the output are the channels (not really a difference but for the sake of consistency)
         x = x[:,self.permute_back,:].reshape(batch_dim,self.size,self.size)
         return x
-    
+
 
 class ClassicalConvNet(nn.Module):
     """
@@ -408,16 +738,17 @@ class ClassicalConvNet(nn.Module):
         x = torch.softmax(self.fc1(x), dim=-1)
         return x
 
+
 class QuantumConvNet(nn.Module):
     """
     A quantum convolutional neural network.
     """
-    def __init__(self):
+    def __init__(self, dev=None):
         """
         Initialize the QuantumConvNet.
         """
         super(QuantumConvNet, self).__init__()
-        self.qconv2 = QuantumConv2d(2, 2, 28)
+        self.qconv = QuantumConv2d(2, 2, 28, device=dev)
         self.fc1 = nn.Linear(28**2, 10)
     
     def forward(self, x):  
@@ -430,7 +761,7 @@ class QuantumConvNet(nn.Module):
         Returns:
             torch.Tensor: Output tensor.
         """
-        x = torch.relu(self.qconv2(x))
+        x = torch.relu(self.qconv(x))
         # 4 * 4 * 4 = 64
         x = x.flatten(1)
         x = torch.softmax(self.fc1(x), dim=-1)
@@ -440,6 +771,7 @@ class QuantumConvNet(nn.Module):
 
 if __name__ == '__main__':
     #%% Data transformation and loading
+    # TODO in the original code the normalization is between 0*pi and 1*pi
     transform = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize((0.5,), (0.5,)),
                                 ])
@@ -455,16 +787,22 @@ if __name__ == '__main__':
     valloader = torch.utils.data.DataLoader(valset, batch_size=10, shuffle=True)
 
     # Initialize the quantum convolutional neural network
-    qnet = ClassicalConvNet()
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    dev = 'meta'    
+    qnet = QuantumConvNet(dev=dev)
     qnet = qnet.to(device=dev)
     criterion = nn.CrossEntropyLoss()
     #optimizer = optim.SGD(qnet.parameters(), lr=0.001, momentum=0.9)
     optimizer = optim.Adam(qnet.parameters(), lr=0.001)
-    print(qnet.conv1.weight)
+    #print(qnet.conv1.weight)
     test = qnet.fc1.weight
+
+    from torchview import draw_graph
+    model_graph = draw_graph(qnet, input_size=(10,1,28,28), device=dev)
+    model_graph.visual_graph
+
     # Training loop
-    for epoch in tqdm(range(10)):
+    for epoch in tqdm(range(1)):
         running_loss = []
         for i, (X_batch, y_batch) in enumerate(trainloader):
             
