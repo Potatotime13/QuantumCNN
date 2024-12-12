@@ -52,7 +52,7 @@ class Hadamard(nn.Module):
         Returns:
             torch.Tensor: Output tensor.
         """
-        return x.matmul(self.unitary)
+        return x.matmul(self.unitary[None,:,:])
 
 
 class CNOTRing(nn.Module):
@@ -137,7 +137,7 @@ class CNOTRing(nn.Module):
         Returns:
             torch.Tensor: Output tensor.
         """
-        return self.unitary.matmul(x)
+        return self.unitary[None,:,:].matmul(x)
 
 
 class HCNOT(nn.Module):
@@ -180,11 +180,11 @@ class RX(nn.Module):
         super(RX, self).__init__()
         self.qubits = qubits
         self.shape = (self.qubits//2, self.qubits//2)
-        shift = torch.kron(torch.pi/2 * torch.eye(self.shape[0], dtype=torch.cfloat), torch.ones(self.qubits, dtype=torch.cfloat))
-        signer = torch.kron(torch.tensor([[1, -1j], [-1j, 1]], dtype=torch.cfloat), torch.ones(self.qubits, dtype=torch.cfloat))
-        self.register_buffer('signer', signer)
-        self.register_buffer('shift', shift)
-        self.register_buffer('pattern', torch.ones(self.shape, dtype=torch.cfloat))
+        shift = torch.kron(torch.ones(self.qubits, dtype=torch.cfloat), torch.pi/2 * torch.eye(self.shape[0], dtype=torch.cfloat))
+        signer = torch.kron(torch.ones(self.qubits, dtype=torch.cfloat), torch.tensor([[1, -1j], [-1j, 1]], dtype=torch.cfloat))
+        self.register_buffer('signer', signer, persistent=True)
+        self.register_buffer('shift', shift, persistent=True)
+        self.register_buffer('pattern', torch.ones(self.shape, dtype=torch.cfloat), persistent=True)
 
         self.weight = nn.Parameter(torch.randn(qubits)) # trainable parameter
 
@@ -209,7 +209,7 @@ class RX(nn.Module):
             idx = -2 * i
             unitary = torch.kron(unitary, w_scale[:,idx-2:idx])
 
-        return unitary @ x
+        return unitary[None,:,:].matmul(x)
 
 
 class RZRZZ(nn.Module):
@@ -227,19 +227,19 @@ class RZRZZ(nn.Module):
         super(RZRZZ, self).__init__()
         self.qubits = qubits
         qubit_tuples = torch.tensor([[i, j] for i in range(1, self.qubits+1) for j in range(i+1, self.qubits+1)]).int()
-        self.register_buffer('qubit_tuples', qubit_tuples)
+        self.register_buffer('qubit_tuples', qubit_tuples, persistent=True)
         rzz_diags = []
         for i in range(len(qubit_tuples)):
             rzz_diags.append(self.get_RZZ_static(qubit_tuples[i]))
         rzz_diags = torch.stack(rzz_diags)
-        self.register_buffer('rzz_diags', rzz_diags)
-        self.register_buffer('rzzscaler', torch.eye(2**self.qubits, dtype=torch.cfloat))
-        self.register_buffer('rzfactor', torch.tensor([2 * 1j], dtype=torch.cfloat))
+        self.register_buffer('rzz_diags', rzz_diags, persistent=True)
+        self.register_buffer('rzzscaler', torch.eye(2**self.qubits, dtype=torch.cfloat), persistent=True)
+        self.register_buffer('rzfactor', torch.tensor([2 * 1j], dtype=torch.cfloat), persistent=True)
         upper_triag = torch.triu(torch.arange(self.qubits**2).reshape(self.qubits, self.qubits), diagonal=1)
         upper_triag = upper_triag[upper_triag != 0]
-        self.register_buffer('upper_triag', upper_triag)
-        self.register_buffer('idx', torch.arange(len(qubit_tuples))[:,None])
-        self.register_buffer('rz_static', self.get_static_RZ())
+        self.register_buffer('upper_triag', upper_triag, persistent=True)
+        self.register_buffer('idx', torch.arange(len(qubit_tuples))[:,None], persistent=True)
+        self.register_buffer('rz_static', self.get_static_RZ(), persistent=True)
 
     def get_static_RZ(self):
         """
@@ -333,19 +333,22 @@ class RZRZZ(nn.Module):
             torch.Tensor: Output tensor.
         """
 
-        rot_mul = x[:,None].matmul(x[None,:])
-        rot_mul = rot_mul.flatten()[self.upper_triag]
-        ops:torch.Tensor = torch.vmap(self.get_RZZ)(self.idx, rot_mul[:,None])
-        ops = ops.reshape(len(self.upper_triag), ops.shape[1], ops.shape[2])
-        # 6, 16, 16
-        unitary_rzz = ops[-1,:,:]
-        for i in range(0, ops.shape[0]-1):
-            unitary_rzz = unitary_rzz.matmul(ops[ops.shape[0]-2-i,:,:])
+
+        rot_mul = x[:,:,None].matmul(x[:,None,:])
+        rot_mul = rot_mul.flatten(-2)[:,self.upper_triag]
+        batch_dim = x.shape[0]
+        tmp_diag = self.rzz_diags[self.idx.T.repeat(batch_dim,1)]
+        tmp_diag = torch.exp(rot_mul[:,:,None]/2 * tmp_diag)
+        ops = tmp_diag[:,:,:,None] * self.rzzscaler[None,None,:,:]
+        # batch, 6, 16, 16
+        unitary_rzz = ops[:,-1,:,:]
+        for i in range(0, ops.shape[1]-1):
+             unitary_rzz = unitary_rzz.matmul(ops[:,ops.shape[1]-2-i,:])
 
         rot = x.div(self.rzfactor)
-        unitary_rz = torch.sum(self.rz_static * rot, dim=(-1,))
+        unitary_rz = torch.sum(self.rz_static[None,:,:] * rot[:,None,:], dim=(-1,))
         unitary_rz = torch.exp(unitary_rz)
-        unitary_rz = torch.diag(unitary_rz)
+        unitary_rz = unitary_rz[:,:,None] * self.rzzscaler[None,:,:]
         
         return unitary_rzz.matmul(unitary_rz)
 
@@ -380,16 +383,15 @@ class QuantumConv2d(nn.Module):
         self.rzrzz = RZRZZ(self.qubits)
 
         # Permutation for sub-parts of the input
-        self.sub_part_permutation = ((torch.arange(0,(size**2)/kernel_size) % size)* (size/kernel_size) 
-                                     + torch.arange(0,(size**2)/kernel_size) // size).int().to(self.device)
+        sub_part_permutation = ((torch.arange(0,(size**2)/kernel_size) % size)* (size/kernel_size) 
+                                     + torch.arange(0,(size**2)/kernel_size) // size).int()
         divisor = self.size // self.kernel_size
-        self.permute_back = (torch.arange(0, self.size**2//self.kernel_size) % divisor * self.size
-                             + torch.arange(0, self.size**2//self.kernel_size) // divisor).int().to(self.device)
+        permute_back = (torch.arange(0, self.size**2//self.kernel_size) % divisor * self.size
+                             + torch.arange(0, self.size**2//self.kernel_size) // divisor).int()
 
-        self.states = self.get_static_state_list(self.qubits).to(self.device)
-
-        # Learnable weight parameter
-        self.weight = nn.Parameter(torch.randn(kernel_size*kernel_size))
+        self.register_buffer('sub_part_permutation', sub_part_permutation, persistent=True)
+        self.register_buffer('permute_back', permute_back, persistent=True)
+        self.register_buffer('states', self.get_static_state_list(self.qubits), persistent=True)
 
     def get_all_H(self, num_qubits):
         """
@@ -677,18 +679,18 @@ class QuantumConv2d(nn.Module):
             torch.Tensor: Output tensor. shape:(batch*(pixelanzahl/kernel_size), kernel_size, kernel_size)
         """
         # Define the sequence of operations in the quantum circuit
-
+        x = x.flatten(-2)
         x = self.rzrzz(x) # encode the input
         x = self.rx(x) # apply weights
         x = self.hcnot(x) # transform the input
 
         # Calculate the state probabilities e.g. measure the output
-        state_probs = (torch.abs(x[:, 0])**2)[None,:]
+        state_probs = (torch.abs(x[:, :, 0])**2)
         state_probs = state_probs.matmul(self.states)
 
         return state_probs
     
-    def forward(self, x):
+    def forward(self, x:torch.Tensor):
         """
         Perform the forward pass of the QuantumConv2d layer.
 
@@ -703,8 +705,8 @@ class QuantumConv2d(nn.Module):
         x = x[:,self.sub_part_permutation].reshape(batch_dim,(self.size**2)//self.kernel_size**2,2,2)
         x = x.flatten(end_dim=-3)
         # NOTE Quantum Circuit
-        x = torch.vmap(self.sub_forward)(x).reshape(
-            batch_dim,x.shape[0]//batch_dim*self.kernel_size,self.kernel_size)
+        x = self.sub_forward(x)
+        x = x.reshape(batch_dim,x.shape[0]//batch_dim*self.kernel_size,self.kernel_size)
         # TODO no permute_back the output are the channels (not really a difference but for the sake of consistency)
         x = x[:,self.permute_back,:].reshape(batch_dim,self.size,self.size)
         return x
@@ -761,7 +763,7 @@ class QuantumConvNet(nn.Module):
         Returns:
             torch.Tensor: Output tensor.
         """
-        x = torch.relu(self.qconv(x))
+        x = self.qconv(x)
         # 4 * 4 * 4 = 64
         x = x.flatten(1)
         x = torch.softmax(self.fc1(x), dim=-1)
@@ -771,10 +773,7 @@ class QuantumConvNet(nn.Module):
 
 if __name__ == '__main__':
     #%% Data transformation and loading
-    # TODO in the original code the normalization is between 0*pi and 1*pi
-    transform = transforms.Compose([transforms.ToTensor(),
-                                transforms.Normalize((0.5,), (0.5,)),
-                                ])
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
 
     trainset = datasets.MNIST('./', download=True, train=True, transform=transform)
     # cut dataset to 1000 samples
@@ -788,21 +787,21 @@ if __name__ == '__main__':
 
     # Initialize the quantum convolutional neural network
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    dev = 'meta'    
-    qnet = QuantumConvNet(dev=dev)
+    #dev = 'meta'    
+    qnet = QuantumConvNet()
     qnet = qnet.to(device=dev)
     criterion = nn.CrossEntropyLoss()
     #optimizer = optim.SGD(qnet.parameters(), lr=0.001, momentum=0.9)
-    optimizer = optim.Adam(qnet.parameters(), lr=0.001)
-    #print(qnet.conv1.weight)
+    optimizer = optim.Adam(qnet.parameters(), lr=0.0001)
+    #print(qnet.qconv.rx.weight)
     test = qnet.fc1.weight
 
     from torchview import draw_graph
-    model_graph = draw_graph(qnet, input_size=(10,1,28,28), device=dev)
+    model_graph = draw_graph(qnet, input_size=(10,28,28), device=dev)
     model_graph.visual_graph
 
     # Training loop
-    for epoch in tqdm(range(1)):
+    for epoch in tqdm(range(10)):
         running_loss = []
         for i, (X_batch, y_batch) in enumerate(trainloader):
             
@@ -817,8 +816,8 @@ if __name__ == '__main__':
             running_loss.append(loss.item())
 
         print(f'Epoch: {epoch}, Loss: {np.mean(running_loss)}')
-        print(qnet.conv1.weight)
-        print(qnet.conv1.weight.grad)
+        print(qnet.qconv.rx.weight)
+        #print(qnet.qconv.rx.weight.grad)
         running_loss = []
 
         # Validation
