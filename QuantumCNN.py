@@ -546,7 +546,7 @@ if __name__ == '__main__':
     # Initialize the quantum convolutional neural network
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     #dev = 'meta'    
-    qnet = QuantumConvNet()
+    qnet = ClassicalConvNet()
     qnet = qnet.to(device=dev)
     criterion = nn.CrossEntropyLoss()
     #optimizer = optim.SGD(qnet.parameters(), lr=0.001, momentum=0.9)
@@ -574,7 +574,7 @@ if __name__ == '__main__':
             running_loss.append(loss.item())
 
         print(f'Epoch: {epoch}, Loss: {np.mean(running_loss)}')
-        print(qnet.qconv.rx.weight)
+        #print(qnet.qconv.rx.weight)
         #print(qnet.qconv.rx.weight.grad)
         running_loss = []
 
