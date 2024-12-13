@@ -801,7 +801,7 @@ if __name__ == '__main__':
     model_graph.visual_graph
 
     # Training loop
-    for epoch in tqdm(range(10)):
+    for epoch in tqdm(range(30)):
         running_loss = []
         for i, (X_batch, y_batch) in enumerate(trainloader):
             
