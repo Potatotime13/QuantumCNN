@@ -74,10 +74,10 @@ def build_and_execute_circuit(in_rot, weight_rot):
 #%%
 if __name__ == '__main__':
     qcon = QuantumConv2d(2, 2, 8)
-    x = torch.tensor([[0.1, 0.2], [0.3, 0.4]], device='cuda')
-    qcon.weight = nn.Parameter(torch.tensor([[0.5, 0.6], [0.7, 0.8]], device='cuda'))
-    qcon.sub_forward(x)
+    x = torch.tensor([1, 0.4, -1, 0.8])
+    qcon.rx.weight = nn.Parameter(torch.tensor([-2.1, 0.4, 1.3, 0.8]))
+    qcon.sub_forward(x[None, :])
     
-    in_rot = [0.1, 0.2, 0.3, 0.4]
-    weight_rot = [0.5, 0.6, 0.7, 0.8]
+    in_rot = [1, 0.4, -1, 0.8]
+    weight_rot = [-2.1, 0.4, 1.3, 0.8]
     build_and_execute_circuit(in_rot, weight_rot)

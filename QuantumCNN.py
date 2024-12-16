@@ -473,13 +473,13 @@ class ClassicalConvNet(nn.Module):
     """
     A quantum convolutional neural network.
     """
-    def __init__(self):
+    def __init__(self, out):
         """
         Initialize the QuantumConvNet.
         """
         super(ClassicalConvNet, self).__init__()
         self.conv1 = nn.Conv2d(1, 4, 2, 2)
-        self.fc1 = nn.Linear(28**2, 10)
+        self.fc1 = nn.Linear(28**2, out)
 
     def forward(self, x):  
         """
@@ -502,13 +502,13 @@ class QuantumConvNet(nn.Module):
     """
     A quantum convolutional neural network.
     """
-    def __init__(self, dev=None):
+    def __init__(self, out, dev=None):
         """
         Initialize the QuantumConvNet.
         """
         super(QuantumConvNet, self).__init__()
         self.qconv = QuantumConv2d(2, 2, 28, device=dev)
-        self.fc1 = nn.Linear(28**2, 10)
+        self.fc1 = nn.Linear(28**2, out)
     
     def forward(self, x):  
         """
@@ -546,7 +546,7 @@ if __name__ == '__main__':
     # Initialize the quantum convolutional neural network
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     #dev = 'meta'    
-    qnet = ClassicalConvNet()
+    qnet = QuantumConvNet(10)
     qnet = qnet.to(device=dev)
     criterion = nn.CrossEntropyLoss()
     #optimizer = optim.SGD(qnet.parameters(), lr=0.001, momentum=0.9)
@@ -559,7 +559,7 @@ if __name__ == '__main__':
     model_graph.visual_graph
 
     # Training loop
-    for epoch in tqdm(range(10)):
+    for epoch in tqdm(range(1)):
         running_loss = []
         for i, (X_batch, y_batch) in enumerate(trainloader):
             
@@ -593,3 +593,64 @@ if __name__ == '__main__':
     print('Finished Training')
 
     #%% computational graph of quantum convolutional layer
+
+    from medmnist import BreastMNIST
+
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+
+    train = BreastMNIST(root='./', split='train', transform=transform, download=True)
+    trainloader = torch.utils.data.DataLoader(train, batch_size=2, shuffle=True)
+
+    val = BreastMNIST(root='./', split='val', transform=transform, download=True)
+    valloader = torch.utils.data.DataLoader(val, batch_size=len(val), shuffle=True)
+
+
+    # Initialize the quantum convolutional neural network
+    dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    qnet = ClassicalConvNet(2)
+    qnet = qnet.to(device=dev)
+    criterion = nn.CrossEntropyLoss()
+
+    optimizer = optim.Adam(qnet.parameters(), lr=0.00001)
+
+    # Training loop
+    
+    for epoch in tqdm(range(10)):
+        running_loss = []
+        for i, (X_batch, y_batch) in enumerate(trainloader):
+            
+            optimizer.zero_grad()
+
+            #conver y_batch to classes 0-1
+            #y_batch = torch.nn.functional.one_hot(y_batch.long(), num_classes=2).float().squeeze()
+            y_batch = y_batch.T[0].long()
+
+            outputs = qnet(X_batch.to(dev))
+            loss = criterion(outputs, y_batch.to(dev))
+            loss.retain_grad()
+            loss.backward()
+            optimizer.step()
+
+            running_loss.append(loss.item())
+
+        print(f'Epoch: {epoch}, Loss: {np.mean(running_loss)}')
+        #print(qnet.qconv.rx.weight)
+        #print(qnet.qconv.rx.weight.grad)
+        running_loss = []
+
+        # Validation
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for (X_batch, y_batch) in valloader:
+                #y_batch = torch.nn.functional.one_hot(y_batch.long(), num_classes=2).float().squeeze()
+                y_batch = y_batch.T[0].long()
+                outputs = qnet(X_batch.to(dev))
+                _, predicted = torch.max(outputs.data, 1)
+                total += y_batch.size(0)
+                correct += (predicted == y_batch.to(dev)).sum().item()
+
+        print(f'Accuracy: {100 * correct / total}')
+
+    print('Finished Training')
+    

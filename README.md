@@ -45,7 +45,7 @@ The QuantumCNN model consists of the following components:
 
 In the original paper the have the following architecture:
 
-28x28x1 --(QCONV)-> 7x7x4 --(FC)-> 11
+28x28x1 --(QCONV)-> 14x14x4 --(FC)-> 11
             |                | 
 Params:     4               8635
 
