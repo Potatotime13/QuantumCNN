@@ -599,7 +599,7 @@ if __name__ == '__main__':
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
 
     train = BreastMNIST(root='./', split='train', transform=transform, download=True)
-    trainloader = torch.utils.data.DataLoader(train, batch_size=2, shuffle=True)
+    trainloader = torch.utils.data.DataLoader(train, batch_size=8, shuffle=True)
 
     val = BreastMNIST(root='./', split='val', transform=transform, download=True)
     valloader = torch.utils.data.DataLoader(val, batch_size=len(val), shuffle=True)
@@ -607,15 +607,15 @@ if __name__ == '__main__':
 
     # Initialize the quantum convolutional neural network
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    qnet = ClassicalConvNet(2)
+    qnet = QuantumConvNet(2)
     qnet = qnet.to(device=dev)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(weight=torch.tensor([2.7,1]).to(dev))
 
-    optimizer = optim.Adam(qnet.parameters(), lr=0.00001)
+    optimizer = optim.Adam(qnet.parameters(), lr=0.001)
 
     # Training loop
     
-    for epoch in tqdm(range(10)):
+    for epoch in tqdm(range(100)):
         running_loss = []
         for i, (X_batch, y_batch) in enumerate(trainloader):
             
