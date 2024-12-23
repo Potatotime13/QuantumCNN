@@ -6,6 +6,9 @@ from torchvision import datasets, transforms
 from torch import nn, optim
 from tqdm import tqdm
 
+from sklearn.metrics import balanced_accuracy_score
+from sklearn.metrics import accuracy_score
+
 # Define quantum gates
 gates = {
     'H': torch.tensor([[1, 1], [1, -1]], dtype=torch.cfloat) / torch.sqrt(torch.tensor([2.0], dtype=torch.cfloat)),
@@ -351,6 +354,47 @@ class RZRZZ(nn.Module):
         return unitary_rzz.matmul(unitary_rz)
 
 
+def balanced_accuracy(y:np.ndarray, y_pred:np.ndarray, weights=None):
+    """
+    Calculate the balanced accuracy.
+
+    Args:
+        y (array-like): Ground truth labels.
+        y_pred (array-like): Predicted labels.
+        weights (dict, optional): A dictionary of weights for each class. 
+                                  Keys are class labels, values are weights. 
+                                  If None, all classes are weighted equally.
+
+    Returns:
+        float: The balanced accuracy.
+    """
+
+    # Get unique classes
+    classes = np.unique(y)
+
+    # Initialize weights
+    if weights is None:
+        weights = {cls: 1.0 for cls in classes}
+
+    # Calculate correct and total for each class
+    correct = {cls: 0 for cls in classes}
+    total = {cls: 0 for cls in classes}
+
+    for cls in classes:
+        correct[cls] = np.sum((y == cls) & (y_pred == cls))
+        total[cls] = np.sum(y == cls)
+
+    # Compute per-class accuracy
+    per_class_accuracy = {cls: correct[cls] / total[cls] if total[cls] > 0 else 0 for cls in classes}
+
+    # Compute weighted balanced accuracy
+    weighted_sum = sum(weights[cls] * per_class_accuracy[cls] for cls in classes)
+    total_weights = sum(weights[cls] for cls in classes)
+
+    balanced_acc = weighted_sum / total_weights
+    return balanced_acc
+
+
 class QuantumConv2d(nn.Module):
     """
     A quantum convolutional layer for 2D inputs.
@@ -526,40 +570,48 @@ class QuantumConvNet(nn.Module):
         x = torch.softmax(self.fc1(x), dim=-1)
         return x
     
-#%%
 
-if __name__ == '__main__':
-    #%% Data transformation and loading
-    import plotly.express as px
+def run_experiment(net_type:str):
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
 
     trainset = datasets.MNIST('./', download=True, train=True, transform=transform)
-    # cut dataset to 1000 samples
-    trainset.data = trainset.data[:10000]
+
     valset = datasets.MNIST('./', download=True, train=False, transform=transform)
     # cut dataset to 100 samples
-    valset.data = valset.data[:1000]
+    half = len(valset.data) // 2
+    valset.data = valset.data[:half]
+    valset.targets = valset.targets[:half]
 
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=10, shuffle=True)
-    valloader = torch.utils.data.DataLoader(valset, batch_size=10, shuffle=True)
+    testset = datasets.MNIST('./', download=True, train=False, transform=transform)
+    testset.data = testset.data[half:]
+    testset.targets = testset.targets[half:]
+
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=100, shuffle=True)
+    valloader = torch.utils.data.DataLoader(valset, batch_size=500, shuffle=True)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=500, shuffle=True)
 
     # Initialize the quantum convolutional neural network
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    #dev = 'meta'    
-    qnet = QuantumConvNet(10)
+    #dev = 'meta'
+    if net_type == 'classical':
+        qnet = ClassicalConvNet(10)
+    else:
+        qnet = QuantumConvNet(10)
     qnet = qnet.to(device=dev)
     criterion = nn.CrossEntropyLoss()
-    #optimizer = optim.SGD(qnet.parameters(), lr=0.001, momentum=0.9)
+
     optimizer = optim.Adam(qnet.parameters(), lr=0.001)
-    #print(qnet.qconv.rx.weight)
+
     test = qnet.fc1.weight
 
-    from torchview import draw_graph
-    model_graph = draw_graph(qnet, input_size=(10,1,28,28), device=dev)
-    model_graph.visual_graph
+    #from torchview import draw_graph
+    #model_graph = draw_graph(qnet, input_size=(10,1,28,28), device=dev)
+    #model_graph.visual_graph
+
+    best_acc = 0
 
     # Training loop
-    for epoch in tqdm(range(1)):
+    for epoch in tqdm(range(50)):
         running_loss = []
         for i, (X_batch, y_batch) in enumerate(trainloader):
             
@@ -574,23 +626,155 @@ if __name__ == '__main__':
             running_loss.append(loss.item())
 
         print(f'Epoch: {epoch}, Loss: {np.mean(running_loss)}')
-        #print(qnet.qconv.rx.weight)
-        #print(qnet.qconv.rx.weight.grad)
         running_loss = []
 
         # Validation
-        correct = 0
-        total = 0
+        y_pred = []
+        y = []
         with torch.no_grad():
             for X_batch, y_batch in valloader:
                 outputs = qnet(X_batch.to(dev))
                 _, predicted = torch.max(outputs.data, 1)
-                total += y_batch.size(0)
-                correct += (predicted == y_batch.to(dev)).sum().item()
+                y_pred.append(predicted.cpu().detach().numpy())
+                y.append(y_batch.cpu().detach().numpy())
+        y = np.concatenate(y)
+        y_pred = np.concatenate(y_pred)
 
-        print(f'Accuracy: {100 * correct / total}')
+        acc = accuracy_score(y, y_pred) * 100
+        bal_acc = balanced_accuracy_score(y, y_pred) * 100
+
+        print(f'Accuracy: {acc}, Balanced Accuracy: {bal_acc}')
+
+        if bal_acc > best_acc:
+            best_acc = acc
+            torch.save(qnet.state_dict(), 'best_model.pth')
 
     print('Finished Training')
+
+    # evaluate the model
+
+    qnet.load_state_dict(torch.load('best_model.pth'))
+
+    y_pred = []
+    y = []
+    with torch.no_grad():
+        for X_batch, y_batch in testloader:
+            outputs = qnet(X_batch.to(dev))
+            _, predicted = torch.max(outputs.data, 1)
+            y_pred.append(predicted.cpu().detach().numpy())
+            y.append(y_batch.cpu().detach().numpy())
+    y = np.concatenate(y)
+    y_pred = np.concatenate(y_pred)
+
+    acc = accuracy_score(y, y_pred) * 100
+    bal_acc = balanced_accuracy_score(y, y_pred) * 100
+
+    print(f'Final Accuracy: {acc}, Final Balanced Accuracy: {bal_acc}')
+
+    with open('results.txt', 'a') as f:
+        f.write(f'{net_type}: {acc}, {bal_acc}\n')
+
+#%%
+
+if __name__ == '__main__':
+    #%% Data transformation and loading
+    import plotly.express as px
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+
+    trainset = datasets.MNIST('./', download=True, train=True, transform=transform)
+
+    valset = datasets.MNIST('./', download=True, train=False, transform=transform)
+    # cut dataset to 100 samples
+    half = len(valset.data) // 2
+    valset.data = valset.data[:half]
+    valset.targets = valset.targets[:half]
+
+    testset = datasets.MNIST('./', download=True, train=False, transform=transform)
+    testset.data = testset.data[half:]
+    testset.targets = testset.targets[half:]
+
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=100, shuffle=True)
+    valloader = torch.utils.data.DataLoader(valset, batch_size=500, shuffle=True)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=500, shuffle=True)
+
+    # Initialize the quantum convolutional neural network
+    dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    #dev = 'meta'  
+    qnet = QuantumConvNet(10)
+    qnet = qnet.to(device=dev)
+    criterion = nn.CrossEntropyLoss()
+
+    optimizer = optim.Adam(qnet.parameters(), lr=0.001)
+
+    test = qnet.fc1.weight
+
+    #from torchview import draw_graph
+    #model_graph = draw_graph(qnet, input_size=(10,1,28,28), device=dev)
+    #model_graph.visual_graph
+
+    best_acc = 0
+
+    # Training loop
+    for epoch in tqdm(range(50)):
+        running_loss = []
+        for i, (X_batch, y_batch) in enumerate(trainloader):
+            
+            optimizer.zero_grad()
+
+            outputs = qnet(X_batch.to(dev))
+            loss = criterion(outputs, y_batch.to(dev))
+            loss.retain_grad()
+            loss.backward()
+            optimizer.step()
+
+            running_loss.append(loss.item())
+
+        print(f'Epoch: {epoch}, Loss: {np.mean(running_loss)}')
+        running_loss = []
+
+        # Validation
+        y_pred = []
+        y = []
+        with torch.no_grad():
+            for X_batch, y_batch in valloader:
+                outputs = qnet(X_batch.to(dev))
+                _, predicted = torch.max(outputs.data, 1)
+                y_pred.append(predicted.cpu().detach().numpy())
+                y.append(y_batch.cpu().detach().numpy())
+        y = np.concatenate(y)
+        y_pred = np.concatenate(y_pred)
+
+        acc = accuracy_score(y, y_pred) * 100
+        bal_acc = balanced_accuracy_score(y, y_pred) * 100
+
+        print(f'Accuracy: {acc}, Balanced Accuracy: {bal_acc}')
+
+        if bal_acc > best_acc:
+            best_acc = acc
+            torch.save(qnet.state_dict(), 'best_model.pth')
+
+    print('Finished Training')
+
+    # evaluate the model
+
+    qnet.load_state_dict(torch.load('best_model.pth'))
+
+    y_pred = []
+    y = []
+    with torch.no_grad():
+        for X_batch, y_batch in testloader:
+            outputs = qnet(X_batch.to(dev))
+            _, predicted = torch.max(outputs.data, 1)
+            y_pred.append(predicted.cpu().detach().numpy())
+            y.append(y_batch.cpu().detach().numpy())
+    y = np.concatenate(y)
+    y_pred = np.concatenate(y_pred)
+
+    acc = accuracy_score(y, y_pred) * 100
+    bal_acc = balanced_accuracy_score(y, y_pred) * 100
+
+    print(f'Final Accuracy: {acc}, Final Balanced Accuracy: {bal_acc}')
+
 
     #%% computational graph of quantum convolutional layer
 
@@ -604,6 +788,8 @@ if __name__ == '__main__':
     val = BreastMNIST(root='./', split='val', transform=transform, download=True)
     valloader = torch.utils.data.DataLoader(val, batch_size=len(val), shuffle=True)
 
+    test = BreastMNIST(root='./', split='test', transform=transform, download=True)
+    testloader = torch.utils.data.DataLoader(test, batch_size=len(test), shuffle=True)
 
     # Initialize the quantum convolutional neural network
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
