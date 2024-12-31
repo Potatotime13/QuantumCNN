@@ -571,51 +571,75 @@ class QuantumConvNet(nn.Module):
         return x
     
 
-def run_experiment(net_type:str):
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
-
-    trainset = datasets.MNIST('./', download=True, train=True, transform=transform)
-
-    valset = datasets.MNIST('./', download=True, train=False, transform=transform)
-    # cut dataset to 100 samples
-    half = len(valset.data) // 2
-    valset.data = valset.data[:half]
-    valset.targets = valset.targets[:half]
-
-    testset = datasets.MNIST('./', download=True, train=False, transform=transform)
-    testset.data = testset.data[half:]
-    testset.targets = testset.targets[half:]
-
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=100, shuffle=True)
-    valloader = torch.utils.data.DataLoader(valset, batch_size=500, shuffle=True)
-    testloader = torch.utils.data.DataLoader(testset, batch_size=500, shuffle=True)
-
+def run_experiment(net_type:str, dataset:str, epochs:int):
     # Initialize the quantum convolutional neural network
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    #dev = 'meta'
-    if net_type == 'classical':
-        qnet = ClassicalConvNet(10)
+
+    if dataset == 'mnist':
+        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+
+        trainset = datasets.MNIST('./', download=True, train=True, transform=transform)
+
+        valset = datasets.MNIST('./', download=True, train=False, transform=transform)
+        # cut dataset to 100 samples
+        half = len(valset.data) // 2
+        valset.data = valset.data[:half]
+        valset.targets = valset.targets[:half]
+
+        testset = datasets.MNIST('./', download=True, train=False, transform=transform)
+        testset.data = testset.data[half:]
+        testset.targets = testset.targets[half:]
+
+        trainloader = torch.utils.data.DataLoader(trainset, batch_size=100, shuffle=True)
+        valloader = torch.utils.data.DataLoader(valset, batch_size=500, shuffle=True)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=500, shuffle=True)
+
+        criterion = nn.CrossEntropyLoss()
+        
     else:
-        qnet = QuantumConvNet(10)
+        from medmnist import BreastMNIST
+
+        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+
+        train = BreastMNIST(root='./', split='train', transform=transform, download=True)
+        trainloader = torch.utils.data.DataLoader(train, batch_size=8, shuffle=True)
+
+        val = BreastMNIST(root='./', split='val', transform=transform, download=True)
+        valloader = torch.utils.data.DataLoader(val, batch_size=len(val), shuffle=True)
+
+        test = BreastMNIST(root='./', split='test', transform=transform, download=True)
+        testloader = torch.utils.data.DataLoader(test, batch_size=len(test), shuffle=True)
+
+        criterion = nn.CrossEntropyLoss(weight=torch.tensor([2.7,1]).to(dev))
+        
+
+    if net_type == 'classical':
+        if dataset == 'mnist':
+            qnet = ClassicalConvNet(10)
+            optimizer = optim.Adam(qnet.parameters(), lr=0.001)
+        else:
+            qnet = ClassicalConvNet(2)
+            optimizer = optim.Adam(qnet.parameters(), lr=0.001)
+    else:
+        if dataset == 'mnist':
+            qnet = QuantumConvNet(10)
+            optimizer = optim.Adam(qnet.parameters(), lr=0.001)
+        else:
+            qnet = QuantumConvNet(2)
+            optimizer = optim.Adam(qnet.parameters(), lr=0.001)
     qnet = qnet.to(device=dev)
-    criterion = nn.CrossEntropyLoss()
-
-    optimizer = optim.Adam(qnet.parameters(), lr=0.001)
-
-    test = qnet.fc1.weight
-
-    #from torchview import draw_graph
-    #model_graph = draw_graph(qnet, input_size=(10,1,28,28), device=dev)
-    #model_graph.visual_graph
 
     best_acc = 0
 
     # Training loop
-    for epoch in tqdm(range(50)):
+    for epoch in tqdm(range(epochs)):
         running_loss = []
         for i, (X_batch, y_batch) in enumerate(trainloader):
             
             optimizer.zero_grad()
+
+            if dataset != 'mnist':
+                y_batch = y_batch.T[0].long()
 
             outputs = qnet(X_batch.to(dev))
             loss = criterion(outputs, y_batch.to(dev))
@@ -625,7 +649,8 @@ def run_experiment(net_type:str):
 
             running_loss.append(loss.item())
 
-        print(f'Epoch: {epoch}, Loss: {np.mean(running_loss)}')
+        if epoch % 10 == 0:
+            print(f'Epoch: {epoch}, Loss: {np.mean(running_loss)}')
         running_loss = []
 
         # Validation
@@ -643,7 +668,8 @@ def run_experiment(net_type:str):
         acc = accuracy_score(y, y_pred) * 100
         bal_acc = balanced_accuracy_score(y, y_pred) * 100
 
-        print(f'Accuracy: {acc}, Balanced Accuracy: {bal_acc}')
+        if epoch % 10 == 0:
+            print(f'Accuracy: {acc}, Balanced Accuracy: {bal_acc}')
 
         if bal_acc > best_acc:
             best_acc = acc
@@ -840,3 +866,17 @@ if __name__ == '__main__':
 
     print('Finished Training')
     
+
+    # %% eval results
+    import pandas as pd
+
+    res_all = pd.read_csv('res.csv')
+
+    res_cifar = res_all[res_all['ds'] == 'cifar10']
+    res_mnist = res_all[res_all['ds'] == 'breast']
+
+    mean_cifar = res_cifar[['mod','acc','bacc']].groupby('mod').mean()
+    std_cifar = res_cifar[['mod','acc','bacc']].groupby('mod').std()
+
+    mean_mnist = res_mnist[['mod','acc','bacc']].groupby('mod').mean()
+    std_mnist = res_mnist[['mod','acc','bacc']].groupby('mod').std()
