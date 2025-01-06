@@ -465,7 +465,7 @@ class QuantumConv2d(nn.Module):
         # Unfold the input tensor
         x = self.unfolder(x)
         x = x.permute(0,2,1).flatten(end_dim=-2)
-        # NOTE Quantum Circuit
+        # NOTE Quantum Circuit, input : (batch*patches, kernel_size**2)
         x = self.sub_forward(x)
         x = x.reshape(batch_dim, img_dim//self.kernel_size, img_dim//self.kernel_size, self.qubits)
         x = x.permute(0,3,1,2)
