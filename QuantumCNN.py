@@ -357,7 +357,7 @@ class QuantumConv2d(nn.Module):
     """
     A quantum convolutional layer for 2D inputs.
     """
-    def __init__(self, kernel_size, stride, size, device=None):
+    def __init__(self, kernel_size, stride, size):
         """
         Initialize the QuantumConv2d layer.
 
@@ -510,7 +510,7 @@ class QuantumConvNet(nn.Module):
         Initialize the QuantumConvNet.
         """
         super(QuantumConvNet, self).__init__()
-        self.qconv = QuantumConv2d(2, 2, 28, device=dev)
+        self.qconv = QuantumConv2d(2, 2, 28)
         self.fc1 = nn.Linear(28**2, out)
     
     def forward(self, x):  
