@@ -424,12 +424,13 @@ class QuantumConv2d(nn.Module):
         Perform the forward pass for a sub-part of the input.
 
         Args:
-            x (torch.Tensor): Input tensor. shape:(batch*(pixelanzahl/kernel_size), kernel_size, kernel_size)
+            x (torch.Tensor): Input tensor. shape:(batch*(pixelanzahl/kernel_size**2), kernel_size**2)
 
         Returns:
-            torch.Tensor: Output tensor. shape:(batch*(pixelanzahl/kernel_size), kernel_size, kernel_size)
+            torch.Tensor: Output tensor. shape:(batch*(pixelanzahl/kernel_size**2), kernel_size**2)
         """
         # Define the sequence of operations in the quantum circuit
+        print(x.shape)
         x = self.rzrzz(x) # encode the input
         x = self.rx(x) # apply weights
         x = self.hcnot(x) # transform the input
