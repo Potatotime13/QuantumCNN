@@ -430,7 +430,8 @@ class QuantumConv2d(nn.Module):
             torch.Tensor: Output tensor. shape:(batch*(pixelanzahl/kernel_size**2), kernel_size**2)
         """
         # Define the sequence of operations in the quantum circuit
-        print(x.shape)
+        #print(x[0])
+        #print(self.rx.weight)
         x = self.rzrzz(x) # encode the input
         x = self.rx(x) # apply weights
         x = self.hcnot(x) # transform the input
@@ -524,7 +525,7 @@ class QuantumConvNet(nn.Module):
             torch.Tensor: Output tensor.
         """
         x = self.qconv(x)
-        # 4 * 4 * 4 = 64
+        #print(x)
         x = x.flatten(1)
         x = torch.softmax(self.fc1(x), dim=-1)
         return x
